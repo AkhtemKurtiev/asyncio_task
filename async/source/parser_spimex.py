@@ -1,16 +1,15 @@
-import asyncio
 import aiohttp
+import asyncio
 import datetime
 import os
 import re
 import time
 
-
 from xlrd import open_workbook
 
 from constants import SKIP_WORDS, URL
-from models.spimex_trading_results import Spimex_trading_results
 from models.database import AsyncSessionLocal, async_engine
+from models.spimex_trading_results import Spimex_trading_results
 from utils import string_to_date
 
 
