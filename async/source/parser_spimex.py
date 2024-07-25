@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import datetime
+import glob
 import os
 import re
 import time
@@ -19,15 +20,15 @@ def write_result_time_to_file(finall_time: float):
         file.write(f'Async code execution time: {finall_time}.\n')
 
 
-async def get_html_content(url: str) -> str | None:
+async def get_html_content(session: aiohttp.ClientSession,
+                           url: str) -> str | None:
     """Получение HTML."""
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as response:
-                return await response.text()
-        except Exception as e:
-            print(e, 'Соединение разорвано, ещё одна попытка!')
-            return None
+    try:
+        async with session.get(url) as response:
+            return await response.text()
+    except Exception as e:
+        print(e, 'Соединение разорвано, ещё одна попытка!')
+        return None
 
 
 def extract_xls_links(html) -> list[str]:
@@ -47,22 +48,22 @@ def extract_xls_links(html) -> list[str]:
     return links_for_download_xls
 
 
-async def download_file(url: str, filename: str) -> bool:
+async def download_file(session: aiohttp.ClientSession,
+                        url: str, filename: str) -> bool:
     """Скачивание и сохранение xls файла."""
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        content = await response.read()
-                        with open(filename, 'wb') as file:
-                            file.write(content)
-                        return True
-            except Exception as e:
-                print(
-                    e,
-                    'Соединение разорвано (скачивание документа), ещё раз!'
-                )
+    while True:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    with open(filename, 'wb') as file:
+                        file.write(content)
+                    return True
+        except Exception as e:
+            print(
+                e,
+                'Соединение разорвано (скачивание документа), ещё раз!'
+            )
 
 
 async def save_to_database(row_data: list, year: int, month: int,
@@ -115,31 +116,54 @@ async def main():
     """Логика парсинга."""
     parse = True
     page = 1
+    async with aiohttp.ClientSession() as session:
+        while parse:
+            url = URL + f'{page}'
+            print(url)
+            html = await get_html_content(session, url)
 
-    while parse:
-        url = URL + f'{page}'
-        print(url)
-        html = await get_html_content(url)
+            if not html:
+                continue
 
-        if not html:
-            continue
+            xls_links = extract_xls_links(html)
 
-        xls_links = extract_xls_links(html)
+            download_tasks = []
+            for link in xls_links:
+                full_url = 'https://spimex.com' + link
+                download_tasks.append(
+                    download_file(
+                        session, full_url, f'{link[-4:len(link)]}.xls'
+                    )
+                )
 
-        for link in xls_links:
-            full_url = 'https://spimex.com' + link
-            filename = f'{link[-4:len(link)]}.xls'
-            if await download_file(full_url, filename):
-                year = await process_xls_file(filename)
-                os.remove(filename)
+            download_result = await asyncio.gather(*download_tasks)
 
+            process_tasks = []
+            for link, success in zip(xls_links, download_result):
+                if success:
+                    process_tasks.append(
+                        process_xls_file(f'{link[-4:len(link)]}.xls')
+                    )
+
+            years = await asyncio.gather(*process_tasks)
+
+            for year, link in zip(years, xls_links):
+                os.remove(f'{link[-4:len(link)]}.xls')
                 if year == 2022:
                     parse = False
                     break
-        page += 1
+            page += 1
+
+
+def remove_file_end() -> None:
+    """Удаление остаточных файлов xls."""
+    files = glob.glob('*.xls')
+    for file in files:
+        os.remove(file)
 
 
 if __name__ == "__main__":
     start_time = time.time()
     asyncio.run(main())
     write_result_time_to_file(time.time() - start_time)
+    remove_file_end()
